@@ -1,0 +1,12 @@
+node-density-index
+------------------
+
+Osmium-based program that takes a planet file and creates from it
+an index file that contains one byte for every 0.05x0.05 degree grid
+square. The index value is based on a logarithm and is able to represent
+numbers between 0 and about 80k.
+
+Optionally creates a coloured heatmap PNG for the planet as well.
+
+Written by Frederik Ramm <frederik@remote.org>, based on
+Osmium's example "nodedensity" script. License: PD

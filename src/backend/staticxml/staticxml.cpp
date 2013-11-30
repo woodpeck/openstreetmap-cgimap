@@ -1,5 +1,6 @@
 #include "backend/staticxml/staticxml.hpp"
 #include "backend.hpp"
+#include "http.hpp"
 #include "output_formatter.hpp"
 
 #include <libxml/parser.h>
@@ -13,8 +14,15 @@
 namespace po = boost::program_options;
 using boost::shared_ptr;
 using std::string;
+using boost::format;
 
 #define CACHE_SIZE 1000
+
+// this backend does not support the density index and 
+// no configurable limits either.
+
+#define MAX_AREA 0.25
+#define MAX_NODES 50000
 
 namespace {
 
@@ -307,10 +315,20 @@ struct static_data_selection : public data_selection {
     }
     return selected;
   }
-  
-  virtual int select_nodes_from_bbox(const bbox &bounds, int max_nodes) {
+
+  virtual void check_bbox_data_size(const bbox &bounds) {
+    // this backend does not currently support using the density index.
+    if (bounds.area() > MAX_AREA) {
+      throw http::bad_request((boost::format("The maximum bbox size is %1%, and your request "
+        "was too large. Either request a smaller area, or use planet.osm")
+        % MAX_AREA).str());
+    }
+  }
+
+  virtual int select_nodes_from_bbox(const bbox &bounds) {
     typedef std::pair<osm_id_t, node> value_type;
     int selected = 0;
+    int max_nodes = MAX_NODES;
     BOOST_FOREACH(const value_type &val, m_db->m_nodes) {
       const node &n = val.second;
       if ((n.m_lon >= bounds.minlon) && (n.m_lon <= bounds.maxlon) &&
@@ -322,6 +340,11 @@ struct static_data_selection : public data_selection {
           break;
         }
       }
+    }
+    if (selected > max_nodes) {
+      throw http::bad_request((format("You requested too many nodes (limit is %1%). "
+          "Either request a smaller area, or use planet.osm")
+          % MAX_NODES).str());
     }
     return selected;
   }

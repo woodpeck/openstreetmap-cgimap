@@ -1,5 +1,6 @@
 #include "backend/pgsnapshot/snapshot_selection.hpp"
 #include "backend.hpp"
+#include "density_estimator.hpp"
 
 #include <boost/make_shared.hpp>
 #include <sstream>
@@ -20,6 +21,7 @@ namespace {
         ("password", po::value<string>(), "database password")
         ("charset", po::value<string>()->default_value("utf8"), "database character set")
         ("dbport", po::value<string>(), "database port number or UNIX socket file name");
+      density_estimator::add_program_options(m_options);
     }
     virtual ~pgsnapshot_backend() {}
 

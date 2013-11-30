@@ -1,5 +1,7 @@
 #include "backend/pgsnapshot/snapshot_selection.hpp"
 #include "logger.hpp"
+#include "http.hpp"
+#include "density_estimator.hpp"
 #include "infix_ostream_iterator.hpp"
 
 #include <set>
@@ -17,6 +19,7 @@ namespace po = boost::program_options;
 using std::set;
 using std::stringstream;
 using std::list;
+using boost::format;
 
 namespace pqxx {
   template<> struct string_traits<list<osm_id_t> >
@@ -124,8 +127,8 @@ namespace {
 
 } // anonymous namespace
 
-snapshot_selection::snapshot_selection(pqxx::connection &conn)
-  : w(conn) {
+snapshot_selection::snapshot_selection(pqxx::connection &conn, density_estimator &estimator)
+  : w(conn), de(estimator) {
   w.exec("CREATE TEMPORARY TABLE tmp_nodes ("
     "id bigint NOT NULL PRIMARY KEY,"
     "version integer NOT NULL,"
@@ -244,9 +247,31 @@ snapshot_selection::select_relations(const std::list<osm_id_t> &ids) {
   return w.prepared("add_relations_list")(ids).exec().affected_rows();
 }
 
+void 
+snapshot_selection::check_bbox_data_size(const bbox &bounds) {
+  int estimate = de.estimate_nodes_in_bbox(bounds);
+  if (estimate < 0) {
+    if (bounds.area() > de.get_max_bbox_area()) {
+      throw http::bad_request((boost::format("The maximum bbox size is %1%, and your request "
+        "was too large. Either request a smaller area, or use planet.osm")
+        %  de.get_max_bbox_area()).str());
+    }
+  } else if (estimate > de.get_max_estimated_nodes()) {
+      throw http::bad_request((boost::format("The area you requested is likely to contain "
+        "more than %1% nodes. Either request a smaller area, or use planet.osm")
+        % de.get_max_nodes()).str());
+  }
+}
+
 int
-snapshot_selection::select_nodes_from_bbox(const bbox &bounds, int max_nodes) {
-  return w.prepared("nodes_from_bbox")(bounds.minlon)(bounds.minlat)(bounds.maxlon)(bounds.maxlat)(max_nodes + 1).exec().affected_rows();
+snapshot_selection::select_nodes_from_bbox(const bbox &bounds) {
+  int found_nodes = w.prepared("nodes_from_bbox")(bounds.minlon)(bounds.minlat)(bounds.maxlon)(bounds.maxlat)(de.get_max_nodes() + 1).exec().affected_rows();
+  if (found_nodes > de.get_max_nodes()) {
+    throw http::bad_request((format("You requested too many nodes (limit is %1%). "
+      "Either request a smaller area, or use planet.osm")
+      % de.get_max_nodes()).str());
+  }
+  return found_nodes;
 }
 
 void 
@@ -302,7 +327,8 @@ snapshot_selection::select_relations_members_of_relations() {
 }
 
 snapshot_selection::factory::factory(const po::variables_map &opts)
-  : m_connection(connect_db_str(opts)) {
+  : m_connection(connect_db_str(opts)),
+    m_density_estimator(opts) {
 
   // set the connections to use the appropriate charset.
   m_connection.set_client_encoding(opts["charset"].as<std::string>());
@@ -470,5 +496,5 @@ snapshot_selection::factory::~factory() {
 }
 
 boost::shared_ptr<data_selection> snapshot_selection::factory::make_selection() {
-  return boost::make_shared<snapshot_selection>(boost::ref(m_connection));
+  return boost::make_shared<snapshot_selection>(boost::ref(m_connection), boost::ref(m_density_estimator));
 }

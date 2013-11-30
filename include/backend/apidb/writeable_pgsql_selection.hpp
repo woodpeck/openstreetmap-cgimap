@@ -4,6 +4,7 @@
 #include "data_selection.hpp"
 #include "backend/apidb/changeset.hpp"
 #include "backend/apidb/cache.hpp"
+#include "density_estimator.hpp"
 #include <pqxx/pqxx>
 #include <boost/program_options.hpp>
 
@@ -15,7 +16,7 @@
 class writeable_pgsql_selection
 	: public data_selection {
 public:
-	 writeable_pgsql_selection(pqxx::connection &conn, cache<osm_id_t, changeset> &changeset_cache);
+	 writeable_pgsql_selection(pqxx::connection &conn, cache<osm_id_t, changeset> &changeset_cache, density_estimator &estimator);
 	 ~writeable_pgsql_selection();
 
 	 void write_nodes(output_formatter &formatter);
@@ -25,11 +26,12 @@ public:
 	 visibility_t check_node_visibility(osm_id_t id);
 	 visibility_t check_way_visibility(osm_id_t id);
 	 visibility_t check_relation_visibility(osm_id_t id);
+   void check_bbox_data_size(const bbox &bounds);
 
 	 int select_nodes(const std::list<osm_id_t> &);
 	 int select_ways(const std::list<osm_id_t> &);
 	 int select_relations(const std::list<osm_id_t> &);
-	 int select_nodes_from_bbox(const bbox &bounds, int max_nodes);
+	 int select_nodes_from_bbox(const bbox &bounds);
 	 void select_nodes_from_relations();
 	 void select_ways_from_nodes();
 	 void select_ways_from_relations();
@@ -54,6 +56,7 @@ public:
      pqxx::connection m_connection, m_cache_connection;
      pqxx::nontransaction m_cache_tx;
      cache<osm_id_t, changeset> m_cache;
+     density_estimator m_density_estimator;
    };
 
 private:
@@ -67,6 +70,9 @@ private:
   // true if a query hasn't been run yet, i.e: it's possible to
   // assume that all the temporary tables are empty.
   bool m_tables_empty;
+
+  // the estimator that tells us how many nodes to expect in an area
+  density_estimator& de;
 };
 
 #endif /* WRITEABLE_PGSQL_SELECTION_HPP */

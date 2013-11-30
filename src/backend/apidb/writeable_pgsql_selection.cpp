@@ -1,6 +1,7 @@
 #include "backend/apidb/writeable_pgsql_selection.hpp"
 #include "backend/apidb/apidb.hpp"
 #include "logger.hpp"
+#include "http.hpp"
 #include "backend/apidb/quad_tile.hpp"
 #include "infix_ostream_iterator.hpp"
 
@@ -17,6 +18,7 @@ using std::set;
 using std::stringstream;
 using std::list;
 using boost::shared_ptr;
+using boost::format;
 
 namespace pqxx {
 template<> struct string_traits<list<osm_id_t> >
@@ -149,8 +151,8 @@ void extract_members(const pqxx::result &res, members_t &members) {
 
 } // anonymous namespace
 
-writeable_pgsql_selection::writeable_pgsql_selection(pqxx::connection &conn, cache<osm_id_t, changeset> &changeset_cache)
-  : w(conn), cc(changeset_cache) {
+writeable_pgsql_selection::writeable_pgsql_selection(pqxx::connection &conn, cache<osm_id_t, changeset> &changeset_cache, density_estimator &estimator)
+  : w(conn), cc(changeset_cache), de(estimator) {
   w.exec("CREATE TEMPORARY TABLE tmp_nodes (id bigint PRIMARY KEY)");
   w.exec("CREATE TEMPORARY TABLE tmp_ways (id bigint PRIMARY KEY)");
   w.exec("CREATE TEMPORARY TABLE tmp_relations (id bigint PRIMARY KEY)");
@@ -250,8 +252,24 @@ writeable_pgsql_selection::select_relations(const std::list<osm_id_t> &ids) {
   return w.prepared("add_relations_list")(ids).exec().affected_rows();
 }
 
+void 
+writeable_pgsql_selection::check_bbox_data_size(const bbox &bounds) {
+  int estimate = de.estimate_nodes_in_bbox(bounds);
+  if (estimate < 0) {
+    if (bounds.area() > de.get_max_bbox_area()) {
+      throw http::bad_request((boost::format("The maximum bbox size is %1%, and your request "
+        "was too large. Either request a smaller area, or use planet.osm")
+        % de.get_max_bbox_area()).str());
+    }
+  } else if (estimate > de.get_max_estimated_nodes()) {
+      throw http::bad_request((boost::format("The area you requested is likely to contain "
+        "more than %1% nodes. Either request a smaller area, or use planet.osm")
+        % de.get_max_nodes()).str());
+  }
+}
+
 int
-writeable_pgsql_selection::select_nodes_from_bbox(const bbox &bounds, int max_nodes) {
+writeable_pgsql_selection::select_nodes_from_bbox(const bbox &bounds) {
   const list<osm_id_t> tiles =
     tiles_for_area(bounds.minlat, bounds.minlon, 
                    bounds.maxlat, bounds.maxlon);
@@ -272,11 +290,19 @@ writeable_pgsql_selection::select_nodes_from_bbox(const bbox &bounds, int max_no
   }
   m_tables_empty = false;
 
-  return w.prepared("visible_node_in_bbox")
+  int found_nodes = w.prepared("visible_node_in_bbox")
     (tiles)
     (int(bounds.minlat * SCALE))(int(bounds.maxlat * SCALE))
     (int(bounds.minlon * SCALE))(int(bounds.maxlon * SCALE))
-    (max_nodes + 1).exec().affected_rows();
+    (de.get_max_nodes() + 1).exec().affected_rows();
+
+  if (found_nodes > de.get_max_nodes()) {
+    throw http::bad_request((format("You requested too many nodes (limit is %1%). "
+        "Either request a smaller area, or use planet.osm")
+        % de.get_max_nodes()).str());
+  }
+
+  return found_nodes;
 }
 
 void 
@@ -328,6 +354,7 @@ writeable_pgsql_selection::factory::factory(const po::variables_map &opts)
   : m_connection(connect_db_str(opts)),
     m_cache_connection(connect_db_str(opts)),
     m_cache_tx(m_cache_connection, "changeset_cache"),
+    m_density_estimator(opts),
     m_cache(boost::bind(fetch_changeset, boost::ref(m_cache_tx), _1), opts["cachesize"].as<size_t>()) {
 
   // set the connections to use the appropriate charset.
@@ -508,5 +535,5 @@ writeable_pgsql_selection::factory::~factory() {
 }
 
 boost::shared_ptr<data_selection> writeable_pgsql_selection::factory::make_selection() {
-  return boost::make_shared<writeable_pgsql_selection>(boost::ref(m_connection),boost::ref(m_cache));
+  return boost::make_shared<writeable_pgsql_selection>(boost::ref(m_connection),boost::ref(m_cache),boost::ref(m_density_estimator));
 }

@@ -62,6 +62,7 @@ libcgimap_core_a_SOURCES=\
 	bbox.cpp \
 	choose_formatter.cpp \
 	data_selection.cpp \
+  density_estimator.cpp \
 	handler.cpp \
 	http.cpp \
 	logger.cpp \

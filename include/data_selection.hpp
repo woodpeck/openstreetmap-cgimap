@@ -44,6 +44,9 @@ public:
 	 // check if the relation is visible, deleted or has never existed
 	 virtual visibility_t check_relation_visibility(osm_id_t id) = 0;
 
+   // check if the expected number of nodes in the bbox is within limits
+   virtual void check_bbox_data_size(const bbox &bounds) = 0;
+
 	 /******************* manipulation functions ******************/
 
 	 /// select the nodes in the list, returning the number of nodes
@@ -59,7 +62,7 @@ public:
 	 virtual int select_relations(const std::list<osm_id_t> &) = 0;
 
    /// given a bounding box, select nodes within that bbox up to a limit of max_nodes
-	 virtual int select_nodes_from_bbox(const bbox &bounds, int max_nodes) = 0;
+	 virtual int select_nodes_from_bbox(const bbox &bounds) = 0;
 
    /// selects the node members of any already selected relations
 	 virtual void select_nodes_from_relations() = 0;

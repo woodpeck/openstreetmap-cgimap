@@ -27,6 +27,7 @@ namespace {
         ("cachesize", po::value<size_t>()->default_value(CACHE_SIZE), "maximum size of changeset cache")
         ("dbport", po::value<string>(), "database port number or UNIX socket file name")
         ;
+      density_estimator::add_program_options(m_options);
     }
     virtual ~apidb_backend() {}
 
