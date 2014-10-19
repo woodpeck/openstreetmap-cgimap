@@ -259,7 +259,9 @@ snapshot_selection::select_relations(const std::list<osm_id_t> &ids) {
 }
 
 int
-snapshot_selection::select_nodes_from_bbox(const bbox &bounds, int max_nodes) {
+snapshot_selection::select_nodes_from_bbox(const bbox &bounds, int max_nodes, bool include_invisible) {
+  // pgsnapshot does not support deleted stuff.
+  if (include_invisible) return 0;
   return w.prepared("nodes_from_bbox")(bounds.minlon)(bounds.minlat)(bounds.maxlon)(bounds.maxlat)(max_nodes + 1).exec().affected_rows();
 }
 
@@ -271,7 +273,8 @@ snapshot_selection::select_nodes_from_relations() {
 }
 
 void 
-snapshot_selection::select_ways_from_nodes() {
+snapshot_selection::select_ways_from_nodes(bool include_invisible) {
+  if (include_invisible) return;
   logger::message("Filling tmp_ways (from nodes)");
 
   w.prepared("ways_from_nodes").exec();
@@ -291,7 +294,7 @@ snapshot_selection::select_relations_from_ways() {
 }
 
 void 
-snapshot_selection::select_nodes_from_way_nodes() {
+snapshot_selection::select_nodes_from_way_nodes(bool include_invisible) {
   w.prepared("nodes_from_way_nodes").exec();
 }
 
@@ -313,6 +316,13 @@ snapshot_selection::select_relations_from_relations() {
 void 
 snapshot_selection::select_relations_members_of_relations() {
   w.prepared("relation_members_of_relations").exec();
+}
+
+void
+snapshot_selection::remove_visible_nodes() {
+}
+void
+snapshot_selection::remove_visible_ways() {
 }
 
 snapshot_selection::factory::factory(const po::variables_map &opts)

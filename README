@@ -1,3 +1,23 @@
+This is a feature branch of CGImap that supports a new "deleted" call 
+with a behaviour similar to "map". "deleted" will return 
+
+* all deleted nodes in the bounding box
+* all deleted ways that use a deleted or not-deleted node in the bounding box
+* all not-deleted nodes required to complete these ways
+
+In every case where a deleted object is returned, the previous un-deleted
+version of the object will be returned as well, therefore many object IDs
+will appear twice in the output.
+
+Relations are not yet supported.
+
+The readonly and writable API 0.6 backends are supported. API 0.7 is not
+yet supported. The pgsnaphot backend is not supported because it does not
+store deleted objects; using "deleted" on the pgsnapshot backend gives
+empty result sets.
+
+The text below is the standard CGImap README.
+
 CGImap
 ======
 

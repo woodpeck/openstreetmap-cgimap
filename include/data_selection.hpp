@@ -56,13 +56,13 @@ public:
 	 virtual int select_relations(const std::list<osm_id_t> &) = 0;
 
    /// given a bounding box, select nodes within that bbox up to a limit of max_nodes
-	 virtual int select_nodes_from_bbox(const bbox &bounds, int max_nodes) = 0;
+	 virtual int select_nodes_from_bbox(const bbox &bounds, int max_nodes, bool include_invisible = false) = 0;
 
    /// selects the node members of any already selected relations
 	 virtual void select_nodes_from_relations() = 0;
 	 
    /// selects all ways that contain selected nodes
-	 virtual void select_ways_from_nodes() = 0;
+	 virtual void select_ways_from_nodes(bool include_invisible = false) = 0;
 	 
    /// selects all ways that are members of selected relations
 	 virtual void select_ways_from_relations() = 0;
@@ -71,7 +71,7 @@ public:
 	 virtual void select_relations_from_ways() = 0;
 	 
    /// select nodes which are used in selected ways
-	 virtual void select_nodes_from_way_nodes() = 0;
+	 virtual void select_nodes_from_way_nodes(bool include_invisible = false) = 0;
 	 
    /// select relations which include selected nodes 
 	 virtual void select_relations_from_nodes() = 0;
@@ -81,6 +81,11 @@ public:
 
   /// select relations which are members of selected relations
   virtual void select_relations_members_of_relations() = 0;
+
+  /// remove visible nodes (leaving only deleted ones)
+  virtual void remove_visible_nodes() = 0;
+  /// remove visible ways (leaving only deleted ones)
+  virtual void remove_visible_ways() = 0;
 
    /**
     * factory for the creation of data selections. this abstracts away

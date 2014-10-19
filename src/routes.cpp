@@ -4,6 +4,7 @@
 
 /*** API 0.6 ***/
 #include "api06/map_handler.hpp"
+#include "api06/deleted_handler.hpp"
 
 #include "api06/node_handler.hpp"
 #include "api06/nodes_handler.hpp"
@@ -130,6 +131,7 @@ routes::routes()
 	{
 		using namespace api06;
 		r->add<map_handler>(root_ / "map");
+		r->add<deleted_handler>(root_ / "deleted");
 
 #ifdef ENABLE_EXPERIMENTAL
     r->add<node_ways_handler>(root_ / "node" / osm_id_ / "ways");

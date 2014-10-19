@@ -177,9 +177,28 @@ writeable_pgsql_selection::write_nodes(output_formatter &formatter) {
   for (pqxx::result::const_iterator itr = nodes.begin(); 
        itr != nodes.end(); ++itr) {
     extract_elem(*itr, elem, cc);
+
+    // if this node is deleted, we'll still output it, but we will *also*
+    // output the previous, un-deleted version.
+    // TODO: currently we assume that decreasing the version number of a deleted
+    // item will yield a non-deleted item. this is not necessarily true and can be
+    // fixed by improving the prepared query
+    if (!elem.visible && elem.version > 1) {
+      pqxx::result old_node = w.prepared("extract_historic_node")(elem.id)(elem.version - 1).exec();
+      pqxx::result::const_iterator old_itr = old_node.begin();
+      if (old_itr != old_node.end()) {
+        element_info old_elem;
+        extract_elem(*old_itr, old_elem, cc);
+        lon = double((*old_itr)["longitude"].as<int64_t>()) / (SCALE);
+        lat = double((*old_itr)["latitude"].as<int64_t>()) / (SCALE);
+        extract_tags(w.prepared("extract_node_tags")(old_elem.id)(old_elem.version).exec(), tags);
+        formatter.write_node(old_elem, lon, lat, tags);
+      }
+    }
+
     lon = double((*itr)["longitude"].as<int64_t>()) / (SCALE);
     lat = double((*itr)["latitude"].as<int64_t>()) / (SCALE);
-    extract_tags(w.prepared("extract_node_tags")(elem.id).exec(), tags);
+    extract_tags(w.prepared("extract_current_node_tags")(elem.id).exec(), tags);
     formatter.write_node(elem, lon, lat, tags);
   }
   formatter.end_element_type(element_type_node);
@@ -200,8 +219,21 @@ writeable_pgsql_selection::write_ways(output_formatter &formatter) {
   for (pqxx::result::const_iterator itr = ways.begin(); 
        itr != ways.end(); ++itr) {
     extract_elem(*itr, elem, cc);
-    extract_nodes(w.prepared("extract_way_nds")(elem.id).exec(), nodes);
-    extract_tags(w.prepared("extract_way_tags")(elem.id).exec(), tags);
+
+    // load and output previous version if this version is deleted.
+    if (!elem.visible && elem.version > 1) {
+      pqxx::result old_way = w.prepared("extract_historic_way")(elem.id)(elem.version - 1).exec();
+      pqxx::result::const_iterator old_itr = old_way.begin();
+      if (old_itr != old_way.end()) {
+        element_info old_elem;
+        extract_elem(*old_itr, old_elem, cc);
+        extract_nodes(w.prepared("extract_way_nds")(old_elem.id)(old_elem.version).exec(), nodes);
+        extract_tags(w.prepared("extract_way_tags")(old_elem.id)(old_elem.version).exec(), tags);
+        formatter.write_way(old_elem, nodes, tags);
+      }
+    }
+    extract_nodes(w.prepared("extract_current_way_nds")(elem.id).exec(), nodes);
+    extract_tags(w.prepared("extract_current_way_tags")(elem.id).exec(), tags);
     formatter.write_way(elem, nodes, tags);
   }
   formatter.end_element_type(element_type_way);
@@ -220,10 +252,13 @@ writeable_pgsql_selection::write_relations(output_formatter &formatter) {
        itr != relations.end(); ++itr) {
     extract_elem(*itr, elem, cc);
     extract_members(w.prepared("extract_relation_members")(elem.id).exec(), members);
-    extract_tags(w.prepared("extract_relation_tags")(elem.id).exec(), tags);
+    extract_tags(w.prepared("extract_current_relation_tags")(elem.id).exec(), tags);
     formatter.write_relation(elem, members, tags);
   }
   formatter.end_element_type(element_type_relation);
+  w.exec("copy tmp_nodes to '/tmp/nodes.csv';");
+  w.exec("copy tmp_ways to '/tmp/ways.csv';");
+  w.exec("copy tmp_relations to '/tmp/relations.csv';");
 }
 
 data_selection::visibility_t 
@@ -260,7 +295,8 @@ writeable_pgsql_selection::select_relations(const std::list<osm_id_t> &ids) {
 }
 
 int
-writeable_pgsql_selection::select_nodes_from_bbox(const bbox &bounds, int max_nodes) {
+writeable_pgsql_selection::select_nodes_from_bbox(const bbox &bounds, 
+  int max_nodes, bool include_invisible) {
   const list<osm_id_t> tiles =
     tiles_for_area(bounds.minlat, bounds.minlon, 
                    bounds.maxlat, bounds.maxlon);
@@ -281,7 +317,7 @@ writeable_pgsql_selection::select_nodes_from_bbox(const bbox &bounds, int max_no
   }
   m_tables_empty = false;
 
-  return w.prepared("visible_node_in_bbox")
+  return w.prepared(include_invisible ? "node_in_bbox" : "visible_node_in_bbox")
     (tiles)
     (int(bounds.minlat * SCALE))(int(bounds.maxlat * SCALE))
     (int(bounds.minlon * SCALE))(int(bounds.maxlon * SCALE))
@@ -296,9 +332,9 @@ writeable_pgsql_selection::select_nodes_from_relations() {
 }
 
 void 
-writeable_pgsql_selection::select_ways_from_nodes() {
+writeable_pgsql_selection::select_ways_from_nodes(bool include_invisible) {
   logger::message("Filling tmp_ways (from nodes)");
-  w.prepared("ways_from_nodes").exec();
+  w.prepared(include_invisible ? "ways_from_nodes" : "visible_ways_from_nodes").exec();
 }
 
 void 
@@ -314,8 +350,8 @@ writeable_pgsql_selection::select_relations_from_ways() {
 }
 
 void 
-writeable_pgsql_selection::select_nodes_from_way_nodes() {
-  w.prepared("nodes_from_way_nodes").exec();
+writeable_pgsql_selection::select_nodes_from_way_nodes(bool include_invisible) {
+  w.prepared(include_invisible ? "nodes_from_way_nodes" : "visible_nodes_from_way_nodes").exec();
 }
 
 void 
@@ -331,6 +367,15 @@ writeable_pgsql_selection::select_relations_from_relations() {
 void 
 writeable_pgsql_selection::select_relations_members_of_relations() {
   w.prepared("relation_members_of_relations").exec();
+}
+
+void 
+writeable_pgsql_selection::remove_visible_nodes() {
+  w.prepared("remove_visible_nodes").exec();
+}
+void 
+writeable_pgsql_selection::remove_visible_ways() {
+  w.prepared("remove_visible_ways").exec();
 }
 
 writeable_pgsql_selection::factory::factory(const po::variables_map &opts)
@@ -367,6 +412,18 @@ writeable_pgsql_selection::factory::factory(const po::variables_map &opts)
         "LIMIT $6")
     ("bigint[]")("integer")("integer")("integer")("integer")("integer");
 
+  // select nodes and invisible nodes with bbox
+  // same as above but without the visible=true condition
+  m_connection.prepare("node_in_bbox",
+    "INSERT INTO tmp_nodes "
+      "SELECT id "
+        "FROM current_nodes "
+        "WHERE tile = ANY($1) "
+          "AND latitude BETWEEN $2 AND $3 "
+          "AND longitude BETWEEN $4 AND $5 "
+        "LIMIT $6")
+    ("bigint[]")("integer")("integer")("integer")("integer")("integer");
+
   // selecting node, way and relation visibility information
   m_connection.prepare("visible_node",
     "SELECT visible FROM current_nodes WHERE id = $1")("bigint");
@@ -394,13 +451,33 @@ writeable_pgsql_selection::factory::factory(const po::variables_map &opts)
       "FROM current_relations r "
         "JOIN tmp_relations tr ON tr.id=r.id");
 
+  m_connection.prepare("extract_historic_node",
+    "SELECT n.node_id as id, n.latitude, n.longitude, n.visible, "
+        "to_char(n.timestamp,'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS timestamp, "
+        "n.changeset_id, n.version "
+      "FROM nodes n "
+        "WHERE n.node_id = $1 AND n.version = $2")("bigint")("int");
+
+  m_connection.prepare("extract_historic_way",
+    "SELECT w.way_id as id, w.visible, w.version, w.changeset_id, "
+        "to_char(w.timestamp,'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS timestamp "
+      "FROM ways w "
+        "WHERE w.way_id = $1 AND w.version = $2")("bigint")("int");
+
   // extraction functions for child information
-  m_connection.prepare("extract_way_nds",
+  m_connection.prepare("extract_current_way_nds",
     "SELECT node_id "
       "FROM current_way_nodes "
       "WHERE way_id=$1 "
       "ORDER BY sequence_id ASC")
     ("bigint");
+  m_connection.prepare("extract_way_nds",
+    "SELECT node_id "
+      "FROM way_nodes "
+      "WHERE way_id=$1 "
+      "AND version=$2 "
+      "ORDER BY sequence_id ASC")
+    ("bigint")("int");
   m_connection.prepare("extract_relation_members",
     "SELECT member_type, member_id, member_role "
       "FROM current_relation_members "
@@ -409,12 +486,20 @@ writeable_pgsql_selection::factory::factory(const po::variables_map &opts)
     ("bigint");
 
   // extraction functions for tags
-  m_connection.prepare("extract_node_tags",
+  // one set accessing the "current" tables, one set accessing the historic tables
+  m_connection.prepare("extract_current_node_tags",
     "SELECT k, v FROM current_node_tags WHERE node_id=$1")("bigint");
-  m_connection.prepare("extract_way_tags",
+  m_connection.prepare("extract_node_tags",
+    "SELECT k, v FROM node_tags WHERE node_id=$1 and version=$2")("bigint")("int");
+  m_connection.prepare("extract_current_way_tags",
     "SELECT k, v FROM current_way_tags WHERE way_id=$1")("bigint");
-  m_connection.prepare("extract_relation_tags",
+  m_connection.prepare("extract_way_tags",
+    "SELECT k, v FROM way_tags WHERE way_id=$1 and version=$2")("bigint")("int");
+  m_connection.prepare("extract_current_relation_tags",
     "SELECT k, v FROM current_relation_tags WHERE relation_id=$1")("bigint");
+  m_connection.prepare("extract_relation_tags",
+    "SELECT k, v FROM relation_tags WHERE relation_id=$1 and version=$2")("bigint")("int");
+
 
   // selecting a set of nodes as a list
   m_connection.prepare("add_nodes_list",
@@ -469,19 +554,43 @@ writeable_pgsql_selection::factory::factory(const po::variables_map &opts)
           "AND xr.id IS NULL");
 
   // select ways which use nodes already in the working set
-  m_connection.prepare("ways_from_nodes",
+  m_connection.prepare("visible_ways_from_nodes",
     "INSERT INTO tmp_ways "
       "SELECT DISTINCT wn.way_id AS id "
         "FROM current_way_nodes wn "
           "JOIN tmp_nodes tn ON wn.node_id = tn.id "
           "LEFT JOIN tmp_ways tw ON wn.way_id = tw.id "
         "WHERE tw.id IS NULL");
+
+  // select ways which use nodes already in the working set
+  // including deleted ways.
+  // FIXME - this also selects ways that have used a node in an 
+  // earlier version but didn't do so in their latest version
+  // before deletion.
+  m_connection.prepare("ways_from_nodes",
+    "INSERT INTO tmp_ways "
+      "SELECT DISTINCT wn.way_id AS id "
+        "FROM way_nodes wn "
+          "JOIN tmp_nodes tn ON wn.node_id = tn.id "
+          "LEFT JOIN tmp_ways tw ON wn.way_id = tw.id "
+        "WHERE tw.id IS NULL");
+
   // select nodes used by ways already in the working set
-  m_connection.prepare("nodes_from_way_nodes",
+  m_connection.prepare("visible_nodes_from_way_nodes",
     "INSERT INTO tmp_nodes "
       "SELECT DISTINCT wn.node_id AS id "
         "FROM tmp_ways tw "
           "JOIN current_way_nodes wn ON tw.id = wn.way_id "
+          "LEFT JOIN tmp_nodes tn ON wn.node_id = tn.id "
+        "WHERE tn.id IS NULL");
+
+  // select nodes used by ways already in the working set
+  // including deleted nodes
+  m_connection.prepare("nodes_from_way_nodes",
+    "INSERT INTO tmp_nodes "
+      "SELECT DISTINCT wn.node_id AS id "
+        "FROM tmp_ways tw "
+          "JOIN way_nodes wn ON tw.id = wn.way_id "
           "LEFT JOIN tmp_nodes tn ON wn.node_id = tn.id "
         "WHERE tn.id IS NULL");
 
@@ -511,6 +620,16 @@ writeable_pgsql_selection::factory::factory(const po::variables_map &opts)
             "ON (tr.id = rm.member_id AND rm.member_type='Relation') "
           "LEFT JOIN tmp_relations xr ON rm.relation_id = xr.id "
         "WHERE xr.id IS NULL");
+  m_connection.prepare("remove_visible_nodes",
+    "DELETE FROM tmp_nodes "
+      "USING current_nodes "
+        "WHERE tmp_nodes.id = current_nodes.id "
+          "AND current_nodes.visible");
+  m_connection.prepare("remove_visible_ways",
+    "DELETE FROM tmp_ways "
+      "USING current_ways "
+        "WHERE tmp_ways.id = current_ways.id "
+          "AND current_ways.visible");
 }
 
 writeable_pgsql_selection::factory::~factory() {

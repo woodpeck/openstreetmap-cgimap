@@ -111,6 +111,16 @@ insert_results(const pqxx::result &res, set<osm_id_t> &elems) {
   return res.affected_rows();
 }
 
+inline int
+remove_results(const pqxx::result &res, set<osm_id_t> &elems) {
+  for (pqxx::result::const_iterator itr = res.begin(); 
+       itr != res.end(); ++itr) {
+      const osm_id_t id = (*itr)["id"].as<osm_id_t>();
+      elems.erase(id);
+  }
+  return res.affected_rows();
+}
+
 /* Shim for functions not yet converted to prepared statements */
 inline int
 insert_results_of(pqxx::work &w, std::stringstream &query, set<osm_id_t> &elems) {
@@ -226,9 +236,28 @@ readonly_pgsql_selection::write_nodes(output_formatter &formatter) {
       for (pqxx::result::const_iterator itr = nodes.begin(); 
            itr != nodes.end(); ++itr) {
         extract_elem(*itr, elem, cc);
+
+        // if this node is deleted, we'll still output it, but we will *also*
+        // output the previous, un-deleted version.
+        // TODO: currently we assume that decreasing the version number of a deleted
+        // item will yield a non-deleted item. this is not necessarily true and can be
+        // fixed by improving the prepared query
+        if (!elem.visible && elem.version > 1) {
+          pqxx::result old_node = w.prepared("extract_historic_node")(elem.id)(elem.version - 1).exec();
+          pqxx::result::const_iterator old_itr = old_node.begin();
+          if (old_itr != old_node.end()) {
+            element_info old_elem;
+            extract_elem(*old_itr, old_elem, cc);
+            lon = double((*old_itr)["longitude"].as<int64_t>()) / (SCALE);
+            lat = double((*old_itr)["latitude"].as<int64_t>()) / (SCALE);
+            extract_tags(w.prepared("extract_node_tags")(old_elem.id)(old_elem.version).exec(), tags);
+            formatter.write_node(old_elem, lon, lat, tags);
+          }
+        }
+
         lon = double((*itr)["longitude"].as<int64_t>()) / (SCALE);
         lat = double((*itr)["latitude"].as<int64_t>()) / (SCALE);
-        extract_tags(w.prepared("extract_node_tags")(elem.id).exec(), tags);
+        extract_tags(w.prepared("extract_visible_node_tags")(elem.id).exec(), tags);
         formatter.write_node(elem, lon, lat, tags);
       }
       
@@ -270,8 +299,22 @@ readonly_pgsql_selection::write_ways(output_formatter &formatter) {
       for (pqxx::result::const_iterator itr = ways.begin(); 
            itr != ways.end(); ++itr) {
         extract_elem(*itr, elem, cc);
-        extract_nodes(w.prepared("extract_way_nds")(elem.id).exec(), nodes);
-        extract_tags(w.prepared("extract_way_tags")(elem.id).exec(), tags);
+
+        // load and output previous version if this version is deleted.
+        if (!elem.visible && elem.version > 1) {
+          pqxx::result old_way = w.prepared("extract_historic_way")(elem.id)(elem.version - 1).exec();
+          pqxx::result::const_iterator old_itr = old_way.begin();
+          if (old_itr != old_way.end()) {
+            element_info old_elem;
+            extract_elem(*old_itr, old_elem, cc);
+            extract_nodes(w.prepared("extract_way_nds")(old_elem.id)(old_elem.version).exec(), nodes);
+            extract_tags(w.prepared("extract_way_tags")(old_elem.id)(old_elem.version).exec(), tags);
+            formatter.write_way(old_elem, nodes, tags);
+          }
+        }
+
+        extract_nodes(w.prepared("extract_visible_way_nds")(elem.id).exec(), nodes);
+        extract_tags(w.prepared("extract_visible_way_tags")(elem.id).exec(), tags);
         formatter.write_way(elem, nodes, tags);
       }
       
@@ -367,7 +410,7 @@ readonly_pgsql_selection::select_relations(const std::list<osm_id_t> &ids) {
 }
 
 int
-readonly_pgsql_selection::select_nodes_from_bbox(const bbox &bounds, int max_nodes) {
+readonly_pgsql_selection::select_nodes_from_bbox(const bbox &bounds, int max_nodes, bool include_invisible) {
   const std::list<osm_id_t> tiles = 
     tiles_for_area(bounds.minlat, bounds.minlon, 
                    bounds.maxlat, bounds.maxlon);
@@ -377,7 +420,7 @@ readonly_pgsql_selection::select_nodes_from_bbox(const bbox &bounds, int max_nod
   w.exec("set enable_mergejoin=false");
   w.exec("set enable_hashjoin=false");
 
-  return insert_results(w.prepared("visible_node_in_bbox")
+  return insert_results(w.prepared(include_invisible ? "node_in_bbox" : "visible_node_in_bbox")
     (tiles)
     (int(bounds.minlat * SCALE))(int(bounds.maxlat * SCALE))
     (int(bounds.minlon * SCALE))(int(bounds.maxlon * SCALE))
@@ -394,11 +437,11 @@ readonly_pgsql_selection::select_nodes_from_relations() {
 }
 
 void 
-readonly_pgsql_selection::select_ways_from_nodes() {
+readonly_pgsql_selection::select_ways_from_nodes(bool include_invisible) {
   logger::message("Filling sel_ways (from nodes)");
   
   if (!sel_nodes.empty()) {
-    insert_results(w.prepared("ways_from_nodes")(sel_nodes).exec(), sel_ways);
+    insert_results(w.prepared(include_invisible ? "ways_from_nodes" : "visible_ways_from_nodes")(sel_nodes).exec(), sel_ways);
   }
 }
 
@@ -421,7 +464,7 @@ readonly_pgsql_selection::select_relations_from_ways() {
 }
 
 void 
-readonly_pgsql_selection::select_nodes_from_way_nodes() {
+readonly_pgsql_selection::select_nodes_from_way_nodes(bool include_invisible) {
   if (!sel_ways.empty()) {
     insert_results(w.prepared("nodes_from_ways")(sel_ways).exec(), sel_nodes);
   }
@@ -448,6 +491,15 @@ readonly_pgsql_selection::select_relations_members_of_relations() {
   }
 }
 
+void
+readonly_pgsql_selection::remove_visible_nodes() {
+  remove_results(w.prepared("visible_nodes")(sel_nodes).exec(), sel_nodes);
+}
+void
+readonly_pgsql_selection::remove_visible_ways() {
+  remove_results(w.prepared("visible_ways")(sel_ways).exec(), sel_ways);
+}
+
 readonly_pgsql_selection::factory::factory(const po::variables_map &opts)
   : m_connection(connect_db_str(opts)),
     m_cache_connection(connect_db_str(opts)),
@@ -464,7 +516,7 @@ readonly_pgsql_selection::factory::factory(const po::variables_map &opts)
 
   logger::message("Preparing prepared statements.");
 
-  // select nodes with bbox
+  // select visible nodes with bbox
   m_connection.prepare("visible_node_in_bbox",
     "SELECT id "
       "FROM current_nodes "
@@ -472,6 +524,16 @@ readonly_pgsql_selection::factory::factory(const po::variables_map &opts)
         "AND latitude BETWEEN $2 AND $3 "
         "AND longitude BETWEEN $4 AND $5 "
         "AND visible = true "
+      "LIMIT $6")
+    ("bigint[]")("integer")("integer")("integer")("integer")("integer");
+
+  // select nodes with bbox
+  m_connection.prepare("node_in_bbox",
+    "SELECT id "
+      "FROM current_nodes "
+      "WHERE tile = ANY($1) "
+        "AND latitude BETWEEN $2 AND $3 "
+        "AND longitude BETWEEN $4 AND $5 "
       "LIMIT $6")
     ("bigint[]")("integer")("integer")("integer")("integer")("integer");
 
@@ -484,12 +546,19 @@ readonly_pgsql_selection::factory::factory(const po::variables_map &opts)
     "SELECT visible FROM current_relations WHERE id = $1")("bigint");
 
   // extraction functions for child information
-  m_connection.prepare("extract_way_nds",
+  m_connection.prepare("extract_visible_way_nds",
     "SELECT node_id "
       "FROM current_way_nodes "
       "WHERE way_id=$1 "
       "ORDER BY sequence_id ASC")
     ("bigint");
+  m_connection.prepare("extract_way_nds",
+    "SELECT node_id "
+      "FROM way_nodes "
+      "WHERE way_id=$1 "
+      "AND version=$2 "
+      "ORDER BY sequence_id ASC")
+    ("bigint")("int");
   m_connection.prepare("extract_relation_members",
     "SELECT member_type, member_id, member_role "
       "FROM current_relation_members "
@@ -497,10 +566,27 @@ readonly_pgsql_selection::factory::factory(const po::variables_map &opts)
       "ORDER BY sequence_id ASC")
     ("bigint");
 
+  m_connection.prepare("extract_historic_node",
+    "SELECT n.node_id as id, n.latitude, n.longitude, n.visible, "
+        "to_char(n.timestamp,'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS timestamp, "
+        "n.changeset_id, n.version "
+      "FROM nodes n "
+        "WHERE n.node_id = $1 AND n.version = $2")("bigint")("int");
+
+  m_connection.prepare("extract_historic_way",
+    "SELECT w.way_id as id, w.visible, w.version, w.changeset_id, "
+        "to_char(w.timestamp,'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS timestamp "
+      "FROM ways w "
+        "WHERE w.way_id = $1 AND w.version = $2")("bigint")("int");
+
   // extraction functions for tags
   m_connection.prepare("extract_node_tags",
+    "SELECT k, v FROM node_tags WHERE node_id=$1 and version=$2")("bigint")("int");
+  m_connection.prepare("extract_visible_node_tags",
     "SELECT k, v FROM current_node_tags WHERE node_id=$1")("bigint");
   m_connection.prepare("extract_way_tags",
+    "SELECT k, v FROM way_tags WHERE way_id=$1 and version=$2")("bigint")("int");
+  m_connection.prepare("extract_visible_way_tags",
     "SELECT k, v FROM current_way_tags WHERE way_id=$1")("bigint");
   m_connection.prepare("extract_relation_tags",
     "SELECT k, v FROM current_relation_tags WHERE relation_id=$1")("bigint");
@@ -522,10 +608,17 @@ readonly_pgsql_selection::factory::factory(const po::variables_map &opts)
       "WHERE id = ANY($1)")
     ("bigint[]");
 
-  // select ways used by nodes
-  m_connection.prepare("ways_from_nodes",
+  // select visible ways used by nodes
+  m_connection.prepare("visible_ways_from_nodes",
     "SELECT DISTINCT wn.way_id AS id "
       "FROM current_way_nodes wn "
+      "WHERE wn.node_id = ANY($1)")
+    ("bigint[]");
+  // select ways used by nodes, including
+  // invisible ones. see FIXME in writable selection
+  m_connection.prepare("ways_from_nodes",
+    "SELECT DISTINCT wn.way_id AS id "
+      "FROM way_nodes wn "
       "WHERE wn.node_id = ANY($1)")
     ("bigint[]");
   // select nodes used by ways
@@ -573,6 +666,18 @@ readonly_pgsql_selection::factory::factory(const po::variables_map &opts)
       "FROM current_relation_members rm "
       "WHERE rm.member_type = 'Relation' "
         "AND rm.relation_id = ANY($1)")
+    ("bigint[]");
+  m_connection.prepare("visible_nodes",
+    "SELECT id "
+      "FROM current_nodes "
+      "WHERE visible "
+        "AND id = ANY($1)")
+    ("bigint[]");
+  m_connection.prepare("visible_ways",
+    "SELECT id "
+      "FROM current_ways "
+      "WHERE visible "
+        "AND id = ANY($1)")
     ("bigint[]");
 }
 
