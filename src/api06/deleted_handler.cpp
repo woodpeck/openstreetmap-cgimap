@@ -33,8 +33,8 @@ deleted_responder::deleted_responder(mime::type mt, bbox b, data_selection &x)
     // this is slightly convoluted now (first select all ways then remove 
     // visible ones) but will be needed later for selecting relations.
     sel.remove_visible_nodes();
-    sel.select_nodes_from_way_nodes(true);
     sel.remove_visible_ways();
+    sel.select_nodes_from_way_nodes(true);
     //sel.select_relations_from_ways();
     //sel.select_relations_from_nodes();
     //sel.select_relations_from_relations();

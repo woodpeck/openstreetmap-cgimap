@@ -4,8 +4,12 @@ AC_INIT([CGImap],
 	[cgimap-0.3.3], 
 	[https://github.com/zerebubuth/openstreetmap-cgimap])
 AM_INIT_AUTOMAKE([subdir-objects parallel-tests])
+LT_INIT
+AC_SUBST([LIBTOOL_DEPS])
+
 AM_SILENT_RULES([yes])
-AC_CONFIG_HEADERS([include/config.h])
+AC_CONFIG_HEADERS([include/cgimap/config.hpp])
+AC_CONFIG_MACRO_DIR([aclocal])
 
 AC_PROG_CXX
 AC_PROG_INSTALL
@@ -38,6 +42,7 @@ AX_BOOST_REGEX
 AX_BOOST_SYSTEM
 AX_BOOST_PROGRAM_OPTIONS
 AX_BOOST_DATE_TIME
+AX_BOOST_FILESYSTEM
 
 # the boost libraries are required, not optional, but the
 # AX_BOOST_* checks only error if the headers aren't
@@ -142,5 +147,18 @@ AM_CONDITIONAL([ENABLE_PGSNAPSHOT], [test "x$enable_pgsnapshot" == xyes])
 AC_CONFIG_FILES([
 	Makefile
 	src/Makefile])
+
+AC_ARG_WITH([clang-format],
+	[AS_HELP_STRING([--with-clang-format@<:@=ARG@:>@],
+	   [Enable re-formatting source code with clang-format. @<:@ARG=no@:>@ ])],
+	[case "${withval}" in
+	  yes ) prog_clang_format="clang-format-3.6" ;;
+	  no ) prog_clang_format="no" ;;
+	  * ) prog_clang_format="${withval}" ;;
+	 esac],
+	[prog_clang_format="no"])
+AS_IF([test "x$prog_clang_format" != "xno"],
+		[AC_CHECK_PROGS([CLANG_FORMAT], "$prog_clang_format", [no])])
+AM_CONDITIONAL([HAVE_CLANG_FORMAT], [test "x$CLANG_FORMAT" != "xno"])
 
 AC_OUTPUT
