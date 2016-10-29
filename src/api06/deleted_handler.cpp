@@ -1,7 +1,7 @@
-#include "api06/deleted_handler.hpp"
-#include "http.hpp"
-#include "fcgi_helpers.hpp"
-#include "logger.hpp"
+#include "cgimap/api06/deleted_handler.hpp"
+#include "cgimap/http.hpp"
+#include "cgimap/request_helpers.hpp"
+#include "cgimap/logger.hpp"
 #include <boost/format.hpp>
 #include <map>
 
@@ -15,11 +15,11 @@ using std::map;
 
 namespace api06 {
 
-deleted_responder::deleted_responder(mime::type mt, bbox b, data_selection &x)
-  : osm_responder(mt, x, boost::optional<bbox>(b)) {
+deleted_responder::deleted_responder(mime::type mt, bbox b, factory_ptr &x)
+  : osm_current_responder(mt, x, boost::optional<bbox>(b)) {
   // create temporary tables of nodes, ways and relations which
   // are in or used by elements in the bbox
-  int num_nodes = sel.select_nodes_from_bbox(b, MAX_NODES, true);
+  int num_nodes = sel->select_nodes_from_bbox(b, MAX_NODES, true);
 
   // TODO: make configurable parameter?
   if (num_nodes > MAX_NODES) {
@@ -29,15 +29,15 @@ deleted_responder::deleted_responder(mime::type mt, bbox b, data_selection &x)
   }
   // Short-circuit empty areas
   if (num_nodes > 0) {
-    sel.select_ways_from_nodes(true);
+    sel->select_ways_from_nodes(true);
     // this is slightly convoluted now (first select all ways then remove 
     // visible ones) but will be needed later for selecting relations.
-    sel.remove_visible_nodes();
-    sel.remove_visible_ways();
-    sel.select_nodes_from_way_nodes(true);
-    //sel.select_relations_from_ways();
-    //sel.select_relations_from_nodes();
-    //sel.select_relations_from_relations();
+    sel->remove_visible_nodes();
+    sel->remove_visible_ways();
+    sel->select_nodes_from_way_nodes(true);
+    //sel->select_relations_from_ways();
+    //sel->select_relations_from_nodes();
+    //sel->select_relations_from_relations();
   }
 
   // map calls typically have a Content-Disposition header saying that
@@ -48,8 +48,8 @@ deleted_responder::deleted_responder(mime::type mt, bbox b, data_selection &x)
 deleted_responder::~deleted_responder() {
 }
 
-deleted_handler::deleted_handler(FCGX_Request &request) 
-  : bounds(validate_request(request)) {
+deleted_handler::deleted_handler(request &req) 
+  : bounds(validate_request(req)) {
 }
 
 deleted_handler::~deleted_handler() {
@@ -61,7 +61,7 @@ deleted_handler::log_name() const {
 }
 
 responder_ptr_t
-deleted_handler::responder(data_selection &x) const {
+deleted_handler::responder(factory_ptr &x) const {
   return responder_ptr_t(new deleted_responder(mime_type, bounds, x));
 }
 
@@ -70,8 +70,8 @@ deleted_handler::responder(data_selection &x) const {
  * throwing an error if there was no valid bounding box.
  */
 bbox
-deleted_handler::validate_request(FCGX_Request &request) {
-  string decoded = http::urldecode(get_query_string(request));
+deleted_handler::validate_request(request &req) {
+  string decoded = http::urldecode(get_query_string(req));
   const map<string, string> params = http::parse_params(decoded);
   map<string, string>::const_iterator itr = params.find("bbox");
 

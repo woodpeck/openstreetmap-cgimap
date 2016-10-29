@@ -325,14 +325,14 @@ struct static_data_selection : public data_selection {
     return selected;
   }
 
-  virtual int select_nodes_from_bbox(const bbox &bounds, int max_nodes) {
+  virtual int select_nodes_from_bbox(const bbox &bounds, int max_nodes, bool include_invisible) {
     typedef std::pair<osm_id_t, node> value_type;
     int selected = 0;
     BOOST_FOREACH(const value_type &val, m_db->m_nodes) {
       const node &n = val.second;
       if ((n.m_lon >= bounds.minlon) && (n.m_lon <= bounds.maxlon) &&
           (n.m_lat >= bounds.minlat) && (n.m_lat <= bounds.maxlat) &&
-          (n.m_info.visible)) {
+          (include_invisible || n.m_info.visible)) {
         m_nodes.insert(n.m_info.id);
         ++selected;
 
@@ -357,14 +357,16 @@ struct static_data_selection : public data_selection {
     }
   }
 
-  virtual void select_ways_from_nodes() {
+  virtual void select_ways_from_nodes(bool include_invisible) {
     typedef std::pair<osm_id_t, way> value_type;
     BOOST_FOREACH(const value_type &val, m_db->m_ways) {
       const way &w = val.second;
-      BOOST_FOREACH(osm_id_t node_id, w.m_nodes) {
-        if (m_nodes.count(node_id) > 0) {
-          m_ways.insert(w.m_info.id);
-          break;
+      if (include_invisible || w.m_info.visible) {
+        BOOST_FOREACH(osm_id_t node_id, w.m_nodes) {
+          if (m_nodes.count(node_id) > 0) {
+            m_ways.insert(w.m_info.id);
+            break;
+          }
         }
       }
     }
@@ -396,11 +398,15 @@ struct static_data_selection : public data_selection {
     }
   }
 
-  virtual void select_nodes_from_way_nodes() {
+  virtual void select_nodes_from_way_nodes(bool include_invisible) {
     BOOST_FOREACH(osm_id_t id, m_ways) {
       std::map<osm_id_t, way>::iterator itr = m_db->m_ways.find(id);
       if (itr != m_db->m_ways.end()) {
-        m_nodes.insert(itr->second.m_nodes.begin(), itr->second.m_nodes.end());
+        for (nodes_t::const_iterator nitr = itr->second.m_nodes.begin(); 
+          nitr != itr->second.m_nodes.end(); nitr++) {
+          if (include_invisible || check_node_visibility(*nitr) == data_selection::exists)
+            m_nodes.insert(*nitr);
+        }
       }
     }
   }
@@ -443,6 +449,32 @@ struct static_data_selection : public data_selection {
             m_relations.insert(m.ref);
           }
         }
+      }
+    }
+  }
+
+  virtual void remove_visible_nodes() {
+    std::map<osm_id_t, node>::iterator itr = m_db->m_nodes.begin();
+    while (itr != m_db->m_nodes.end()) {
+      if (itr->second.m_info.visible) {
+        std::map<osm_id_t, node>::iterator prev = itr++;
+        m_db->m_nodes.erase(prev);
+      }
+      else {
+        itr++;
+      }
+    }
+  }
+
+  virtual void remove_visible_ways() {
+    std::map<osm_id_t, way>::iterator itr = m_db->m_ways.begin();
+    while (itr != m_db->m_ways.end()) {
+      if (itr->second.m_info.visible) {
+        std::map<osm_id_t, way>::iterator prev = itr++;
+        m_db->m_ways.erase(prev);
+      }
+      else {
+        itr++;
       }
     }
   }
